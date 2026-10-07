@@ -1,0 +1,46 @@
+name: DotNet CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "DotNet/**"
+      - ".github/workflows/dotnet-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "DotNet/**"
+      - ".github/workflows/dotnet-ci.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: DotNet
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore DotNet.slnx
+
+      - name: Build
+        run: dotnet build DotNet.slnx --no-restore --configuration Release
+
+      - name: Trust HTTPS development certificate
+        run: |
+          dotnet dev-certs https --clean
+          dotnet dev-certs https --trust
+        continue-on-error: true
+
+      - name: Test
+        run: dotnet test DotNet.slnx --no-build --configuration Release --verbosity normal
+        timeout-minutes: 30

@@ -1,0 +1,134 @@
+# Dokploy: docker compose -f ./DotNet/docker-compose.yml up -d --build
+# Ingen host-ports. Kun Traefik via labels.
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+      HTTP_USER: ${REDIS_UI_USER:-}
+      HTTP_PASSWORD: ${REDIS_UI_PASSWORD:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.h3-redis-ui.rule=Host(`${REDIS_UI_DOMAIN:-h3-redis.mercantec.tech}`)
+      - traefik.http.routers.h3-redis-ui.entrypoints=web
+      - traefik.http.routers.h3-redis-ui.service=h3-redis-ui
+      - traefik.http.services.h3-redis-ui.loadbalancer.server.port=8081
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-h3}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-h3secret}
+      POSTGRES_DB: ${POSTGRES_DB:-h3}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  pgweb:
+    image: sosedoff/pgweb:0.16.2
+    restart: unless-stopped
+    command: ["--bind=0.0.0.0", "--listen=8081"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-h3}:${POSTGRES_PASSWORD:-h3secret}@postgres:5432/${POSTGRES_DB:-h3}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.h3-pgweb.rule=Host(`${PGWEB_DOMAIN:-h3-pgweb.mercantec.tech}`)
+      - traefik.http.routers.h3-pgweb.entrypoints=web
+      - traefik.http.routers.h3-pgweb.service=h3-pgweb
+      - traefik.http.services.h3-pgweb.loadbalancer.server.port=8081
+
+  apiservice:
+    build:
+      context: .
+      dockerfile: Docker/Dockerfile.apiservice
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      ConnectionStrings__cache: redis:6379
+      ConnectionStrings__h3db: Host=postgres;Port=5432;Database=${POSTGRES_DB:-h3};Username=${POSTGRES_USER:-h3};Password=${POSTGRES_PASSWORD:-h3secret}
+      HealthChecks__Enabled: "true"
+      Infisical__ClientId: ${INFISICAL__CLIENTID:-}
+      Infisical__ClientSecret: ${INFISICAL__CLIENTSECRET:-}
+      Infisical__ProjectId: ${INFISICAL__PROJECTID:-}
+      Infisical__EnvironmentSlug: ${INFISICAL__ENVIRONMENTSLUG:-}
+      Infisical__SecretPath: ${INFISICAL__SECRETPATH:-/}
+      Infisical__HostUri: ${INFISICAL__HOSTURI:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: Docker/Dockerfile.web
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      ConnectionStrings__cache: redis:6379
+      HealthChecks__Enabled: "true"
+      services__apiservice__http__0: http://apiservice:8080
+    depends_on:
+      redis:
+        condition: service_healthy
+      apiservice:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.h3-web.rule=Host(`${APP_DOMAIN:-h3.mercantec.tech}`)
+      - traefik.http.routers.h3-web.entrypoints=web
+      - traefik.http.routers.h3-web.service=h3-web
+      - traefik.http.services.h3-web.loadbalancer.server.port=8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+networks:
+  default:
+    name: dokploy-network
+    external: true
+
+volumes:
+  redis-data:
+  postgres-data:
